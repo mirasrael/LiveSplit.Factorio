@@ -27,7 +27,14 @@ A [LiveSplit](https://livesplit.org/) auto splitter (`.asl`) for Factorio 2.x, i
 
 Segments without a tag are split manually. Names are internal prototype names
 (`railway`, `rocket-silo`, `advanced-oil-processing`, `locomotive`, `oil-refinery`, `biolab`, …),
-as shown in the game's tooltips with *Show internal names* or on the wiki.
+as shown in the game's tooltips with *Show internal names* or on the wiki. When a map is
+loaded, tags naming an unknown technology, entity or item are reported in the log
+(`[Factorio] unknown … name`, visible in DebugView).
+
+Tips for tags that work well with catch-up: use a technology or build count that is only
+reached at the *end* of the segment. A tag that can become true early (e.g. a cheap research
+done long before its segment) makes catch-up skip too far. Build counts are lifetime totals
+across all surfaces, so count the entities from earlier segments too.
 
 ## How it works
 

@@ -417,7 +417,22 @@ update
         {
             // A map that is still loading can be half-initialised: retry on the next
             // update, but only log the first failure.
-            try { vars.IndexMap(map); vars.IndexError = false; }
+            try
+            {
+                vars.IndexMap(map);
+                vars.IndexError = false;
+                // Warn about tags that name nothing in this game (typos, wrong prototype
+                // names, mods missing) - such a segment would never split on its own.
+                Dictionary<string, IntPtr> techs = vars.Techs;
+                Dictionary<string, int> ents = vars.Entities, items = vars.Items;
+                foreach (var seg in timer.Run)
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(seg.Name ?? "", @"\[(research|build|inventory|inv):([A-Za-z0-9_\-]+)(?:=\d+)?\]"))
+                    {
+                        string k = m.Groups[1].Value, n = m.Groups[2].Value;
+                        bool known = k == "research" ? techs.ContainsKey(n) : k == "build" ? ents.ContainsKey(n) : items.ContainsKey(n);
+                        if (!known) vars.Log("unknown " + k + " name '" + n + "' in segment: " + seg.Name);
+                    }
+            }
             catch (Exception e)
             {
                 if (!vars.IndexError) vars.Log("indexing failed (will retry): " + e.Message);
