@@ -65,7 +65,7 @@ current segment needs, with the game's icons and live counters:
 items in the inventory (`165/50`), entities built over the run (`6/30`) and research (`✓`).
 Done entries turn green.
 
-- Build and install (close LiveSplit first): `componentuild.ps1 -Install`
+- Build and install (close LiveSplit first): `componentbuild.ps1 -Install`
   (uses the .NET Framework compiler that ships with Windows; finds a winget or
   Program Files LiveSplit install, or pass `-LiveSplit <folder>`).
 - *Edit Layout → + → Information → Factorio Step*, below the splits. Keep the
