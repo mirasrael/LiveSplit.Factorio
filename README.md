@@ -13,6 +13,11 @@ A [LiveSplit](https://livesplit.org/) auto splitter (`.asl`) for Factorio 2.x, i
 | `[build:locomotive]` | at least one entity of that type has been built |
 | `[build:lab=40]` | at least 40 have been built |
 | `[rocket]`, `[rocket=3]` | the player force has launched 1 (or N) rockets |
+| `[inventory:transport-belt=100]`, `[inv:…]` | the player's character carries at least N of that item (all qualities) |
+
+- **Retry a segment by loading a save**: game time follows the save's ticks, and every split
+  made after the moment the save was taken is undone automatically, so the segment can be
+  split again (setting *rewind*, on by default).
 
 Segments without a tag are split manually. Names are internal prototype names
 (`railway`, `rocket-silo`, `advanced-oil-processing`, `locomotive`, `oil-refinery`, `biolab`, …),
@@ -30,7 +35,8 @@ resolves the addresses and structure offsets it needs by name, and caches them i
 so it keeps working as long as the relevant structures keep their names.
 
 Memory path used: `global → scenario → map → ticksPlayed`, the player force's technologies,
-`rocketsLaunched`, and the force's entity build statistics.
+`rocketsLaunched`, the force's entity build statistics, and the first player's character
+main inventory (`players[0] → physicalController → character → inventory`).
 
 ## Install
 

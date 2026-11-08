@@ -13,6 +13,8 @@
 //   [build:locomotive]      split when at least 1 entity of that type was built
 //   [build:lab=40]          ... at least 40 built
 //   [rocket]  [rocket=2]    split when the player force has launched N rockets
+//   [inventory:transport-belt=100]  (or [inv:...]) split when the player's
+//                           character carries at least N of that item
 // Segments without a tag are split manually.
 
 state("factorio") {}
@@ -24,7 +26,8 @@ startup
     settings.Add("gametime", true, "Use in-game time (ticks played, the same clock achievements use)");
     settings.Add("autostart", true, "Start the timer when a new map starts");
     settings.Add("autoreset", false, "Reset the timer when a new map starts");
-    settings.Add("tags", true, "Split on tags in segment names: [research:x] [build:x=N] [rocket=N]");
+    settings.Add("rewind", true, "Loading an earlier save undoes splits made after it (retry a segment)");
+    settings.Add("tags", true, "Split on tags in segment names: [research:x] [build:x=N] [rocket=N] [inventory:x=N]");
     settings.Add("debug", false, "Log state changes (view with DebugView)");
 
     // P/Invoke into dbghelp.dll via Reflection.Emit: ASL scripts cannot declare
@@ -61,6 +64,7 @@ init
     vars.Ticks = 0UL;
     vars.FreshMapStart = false;
     vars.FreshMapReset = false;
+    vars.IndexError = false;
     Action<string> log = vars.Log;
 
     string exe = modules.First().FileName;
@@ -69,8 +73,11 @@ init
 
     string cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveSplit.Factorio");
     var fi = new FileInfo(exe);
-    string cacheFile = Path.Combine(cacheDir, "offsets-v1-" + fi.Length + "-" + fi.LastWriteTimeUtc.Ticks + ".txt");
+    string cacheFile = Path.Combine(cacheDir, "offsets-" + fi.Length + "-" + fi.LastWriteTimeUtc.Ticks + ".txt");
 
+    // Bump when the set of resolved offsets changes; the cache is only trusted when
+    // it was written by the same schema.
+    const string SCHEMA = "3";
     if (File.Exists(cacheFile))
     {
         foreach (var line in File.ReadAllLines(cacheFile))
@@ -78,8 +85,11 @@ init
             var kv = line.Split('=');
             if (kv.Length == 2) O[kv[0]] = long.Parse(kv[1]);
         }
-        log("offsets loaded from cache " + cacheFile);
+        long schema;
+        if (O.TryGetValue("schema", out schema) && schema.ToString() == SCHEMA) log("offsets loaded from cache " + cacheFile);
+        else { O.Clear(); log("offset cache is outdated, resolving again"); }
     }
+    if (O.Count > 0) { }
     else if (!File.Exists(pdb))
     {
         log("factorio.pdb not found next to " + exe + " - cannot resolve offsets");
@@ -143,6 +153,32 @@ init
                 }
                 throw new Exception("member not found: " + udt + "." + name);
             };
+            // Offset of a (possibly indirect) base class inside a derived class.
+            Func<uint, string, long, long> baseOffsetRec = null;
+            baseOffsetRec = (t, want, acc) =>
+            {
+                uint count = (uint)infoNum(t, 13);
+                var b = new byte[8 + 4 * count];
+                BitConverter.GetBytes(count).CopyTo(b, 0);
+                if (!info(t, 7, b)) return -1;
+                for (int i = 0; i < count; i++)
+                {
+                    uint c = BitConverter.ToUInt32(b, 8 + 4 * i);
+                    if ((uint)infoNum(c, 0) != 18) continue;   // SymTagBaseClass
+                    uint bt = (uint)infoNum(c, 4);
+                    long o = acc + (long)(uint)infoNum(c, 10);
+                    if (infoName(bt) == want) return o;
+                    long deeper = baseOffsetRec(bt, want, o);
+                    if (deeper >= 0) return deeper;
+                }
+                return -1;
+            };
+            Func<string, string, long> baseOffset = (udt, want) =>
+            {
+                long o = baseOffsetRec(typeId(udt), want, 0);
+                if (o < 0) throw new Exception("base not found: " + udt + " : " + want);
+                return o;
+            };
 
             const string FLOW = "FlowStatistics<IDWithQuality<ID<EntityPrototype,unsigned short> >,unsigned __int64,void>";
             O["global"] = symRva("global");
@@ -164,7 +200,23 @@ init
             O["tech.prototype"] = member("Technology", "prototype");
             O["tech.researchCount"] = member("Technology", "researchCount");
             O["proto.name"] = member("PrototypeBase", "name");
+            // Character inventory: map.players[0] -> controllerManager.physicalController
+            // (CharacterController) -> character targeter -> Character -> main inventory.
+            O["itemPrototypes"] = symRva("PrototypeList<ItemPrototype>::indexToPrototype");
+            O["map.players"] = member("Map", "players");
+            O["player.controllerManager"] = member("Player", "controllerManager");
+            O["cm.physicalController"] = member("ControllerManager", "physicalController");
+            O["cc.character"] = member("CharacterController", "character");
+            O["targeter.target"] = member("TargeterBase", "target");
+            O["character.targetable"] = baseOffset("Character", "Targetable");
+            O["character.inventory"] = member("Character", "inventory");
+            O["inv.data"] = member("Inventory", "data");
+            O["inv.size"] = member("Inventory", "dataSize");
+            O["stack.size"] = sizeOf("ItemStack");
+            O["stack.count"] = member("ItemStack", "count");
+            O["stack.item"] = member("ItemStack", "itemID");
 
+            O["schema"] = long.Parse(SCHEMA);
             Directory.CreateDirectory(cacheDir);
             File.WriteAllLines(cacheFile, O.Select(kv => kv.Key + "=" + kv.Value).ToArray());
             log("offsets resolved and cached");
@@ -238,7 +290,16 @@ init
                 idx++;
             }
             vars.Entities = ents;
-            log("map indexed: " + techs.Count + " technologies, " + ents.Count + " entity prototypes");
+            var items = new Dictionary<string, int>();
+            idx = 0;
+            foreach (var pp in vec(new IntPtr(baseAddr + O["itemPrototypes"]), 8))
+            {
+                IntPtr pr = memory.ReadPointer(pp);
+                if (pr != IntPtr.Zero) { string n = str(add(pr, O["proto.name"])); if (n != "" && !items.ContainsKey(n)) items[n] = idx; }
+                idx++;
+            }
+            vars.Items = items;
+            log("map indexed: " + techs.Count + " technologies, " + ents.Count + " entity prototypes, " + items.Count + " items");
         });
 
         vars.Researched = (Func<string, bool>)(name =>
@@ -261,6 +322,36 @@ init
                 if (flow == IntPtr.Zero) continue;
                 foreach (var e in vec(add(flow, O["flow.input"]), 16))
                     if (memory.ReadValue<ushort>(e) == id) total += memory.ReadValue<ulong>(add(e, 8));
+            }
+            return total;
+        });
+
+        // Total count of an item in the first player's character main inventory
+        // (all qualities). 0 when there is no character (e.g. god/editor mode).
+        vars.InventoryCount = (Func<string, ulong>)(name =>
+        {
+            Dictionary<string, int> items = vars.Items;
+            IntPtr map = vars.Map;
+            int id;
+            if (map == IntPtr.Zero || !items.TryGetValue(name, out id)) return 0UL;
+            var players = vec(add(map, O["map.players"]), 8);
+            if (players.Count == 0) return 0UL;
+            IntPtr player = memory.ReadPointer(players[0]);
+            IntPtr cc = ptr(player, O["player.controllerManager"] + O["cm.physicalController"]);
+            IntPtr target = ptr(cc, O["cc.character"] + O["targeter.target"]);
+            if (target == IntPtr.Zero) return 0UL;
+            IntPtr inv = add(target, O["character.inventory"] - O["character.targetable"]);
+            IntPtr data = memory.ReadPointer(add(inv, O["inv.data"]));
+            int slots = memory.ReadValue<ushort>(add(inv, O["inv.size"]));
+            if (data == IntPtr.Zero || slots > 2000) return 0UL;
+            byte[] raw = memory.ReadBytes(data, slots * (int)O["stack.size"]);
+            if (raw == null) return 0UL;
+            ulong total = 0;
+            for (int i = 0; i < slots; i++)
+            {
+                int o = i * (int)O["stack.size"];
+                uint count = BitConverter.ToUInt32(raw, o + (int)O["stack.count"]);
+                if (count > 0 && BitConverter.ToUInt16(raw, o + (int)O["stack.item"]) == id) total += count;
             }
             return total;
         });
@@ -294,12 +385,39 @@ update
         vars.Map = map;
         if (map != IntPtr.Zero)
         {
-            try { vars.IndexMap(map); }
-            catch (Exception e) { vars.Log("indexing failed: " + e.Message); vars.Map = IntPtr.Zero; }
+            // A map that is still loading can be half-initialised: retry on the next
+            // update, but only log the first failure.
+            try { vars.IndexMap(map); vars.IndexError = false; }
+            catch (Exception e)
+            {
+                if (!vars.IndexError) vars.Log("indexing failed (will retry): " + e.Message);
+                vars.IndexError = true;
+                vars.Map = IntPtr.Zero;
+            }
             bool fresh = ticks < 600;   // less than 10 s played: a new game, not a loaded save
             vars.FreshMapStart = fresh;
             vars.FreshMapReset = fresh;
             if (settings["debug"]) vars.Log("map " + map.ToString("X") + " ticks " + ticks + (fresh ? " (new game)" : ""));
+
+            // Loading an earlier save during a run (retrying a segment): game time
+            // already follows the save's ticks; also undo every split made after the
+            // moment the save was taken, so those segments can be split again.
+            if (!fresh && settings["rewind"] &&
+                (timer.CurrentPhase == TimerPhase.Running || timer.CurrentPhase == TimerPhase.Ended))
+            {
+                var model = new TimerModel { CurrentState = timer };
+                var saveTime = TimeSpan.FromSeconds((double)ticks / 60.0);
+                int undone = 0;
+                while (timer.CurrentSplitIndex != 0)
+                {
+                    int last = timer.CurrentPhase == TimerPhase.Ended ? timer.Run.Count - 1 : timer.CurrentSplitIndex - 1;
+                    var st = timer.Run[last].SplitTime.GameTime;
+                    if (!st.HasValue || st.Value <= saveTime) break;
+                    model.UndoSplit();
+                    undone++;
+                }
+                if (undone > 0) vars.Log("save loaded at " + saveTime.ToString(@"h\:mm\:ss") + ": undid " + undone + " split(s)");
+            }
         }
     }
     vars.Ticks = ticks;
@@ -327,7 +445,7 @@ split
 {
     if (!settings["tags"] || vars.Map == IntPtr.Zero || timer.CurrentSplitIndex < 0) return false;
     string name = timer.Run[timer.CurrentSplitIndex].Name;
-    var m = System.Text.RegularExpressions.Regex.Match(name, @"\[(research|build|rocket)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
+    var m = System.Text.RegularExpressions.Regex.Match(name, @"\[(research|build|rocket|inventory|inv)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
     if (!m.Success) return false;
 
     string kind = m.Groups[1].Value;
@@ -338,6 +456,7 @@ split
         if (kind == "research") return vars.Researched(target);
         if (kind == "build") return vars.BuiltCount(target) >= need;
         if (kind == "rocket") return (ulong)vars.Rockets() >= need;
+        if (kind == "inventory" || kind == "inv") return vars.InventoryCount(target) >= need;
     }
     catch (Exception) { }
     return false;
