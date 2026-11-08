@@ -392,6 +392,18 @@ init
             return done;
         });
 
+        // Bridge for the Factorio Step layout component (LiveSplit.FactorioStep.dll):
+        // query(kind, name) -> count, -1 when no map is loaded.
+        // kind: "inv" (character inventory), "build" (lifetime built), "research" (0/1), "rocket".
+        AppDomain.CurrentDomain.SetData("LiveSplit.Factorio.Query", (Func<string, string, long>)((kind, name) =>
+        {
+            if (!vars.Ready || vars.Map == IntPtr.Zero || vars.IndexError) return -1L;
+            if (kind == "research") return vars.Researched(name) ? 1L : 0L;
+            if (kind == "build") return (long)vars.BuiltCount(name);
+            if (kind == "rocket") return (long)vars.Rockets();
+            return (long)vars.InventoryCount(name);
+        }));
+
         vars.Ready = true;
         log("ready");
     }
@@ -533,4 +545,10 @@ gameTime
 exit
 {
     vars.Ready = false;
+    AppDomain.CurrentDomain.SetData("LiveSplit.Factorio.Query", null);
+}
+
+shutdown
+{
+    AppDomain.CurrentDomain.SetData("LiveSplit.Factorio.Query", null);
 }

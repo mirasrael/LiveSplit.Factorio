@@ -58,6 +58,33 @@ main inventory (`players[0] → physicalController → character → inventory`)
 3. *Compare Against → Game Time* (right-click LiveSplit), so the timer shows game time.
 4. Add tags to your segment names — see [`examples/example-tags.lss`](examples/example-tags.lss).
 
+## Step panel with icons (optional)
+
+`component/` contains **Factorio Step**, a LiveSplit layout component that shows what the
+current segment needs, with the game's icons and live counters:
+items in the inventory (`165/50`), entities built over the run (`6/30`) and research (`✓`).
+Done entries turn green.
+
+- Build and install (close LiveSplit first): `componentuild.ps1 -Install`
+  (uses the .NET Framework compiler that ships with Windows; finds a winget or
+  Program Files LiveSplit install, or pass `-LiveSplit <folder>`).
+- *Edit Layout → + → Information → Factorio Step*, below the splits. Keep the
+  Scriptable Auto Splitter with `Factorio.asl` in the same layout: the script publishes the
+  counters, the panel only draws them.
+- The list for each segment comes from `<splits>.steps.txt` next to the `.lss`
+  (see [`examples/factorio-space-age-rsng-achievements.steps.txt`](examples/factorio-space-age-rsng-achievements.steps.txt)):
+
+```
+> Крафт: 50 лент            # segment whose name starts with this text
+transport-belt=50 inserter=40 small-electric-pole=50 electric-mining-drill=25
+build:steam-engine=30 research:railway rocket=1
+note: optional line of text
+```
+
+  Without an entry, the panel shows the tags of the segment name. The file is re-read when saved.
+- Icons are read from the game's `data` folder (found from the running game, or set it in
+  the component settings).
+
 ## Limitations
 
 - Windows, 64-bit Factorio with `factorio.pdb` present (Steam and standalone builds ship it).
