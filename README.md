@@ -75,7 +75,8 @@ Done entries turn green.
   (see [`examples/factorio-space-age-rsng-achievements.steps.txt`](examples/factorio-space-age-rsng-achievements.steps.txt)):
 
 ```
-> Крафт: 50 лент            # segment whose name starts with this text
+# "> text" = the segment whose name starts with this text
+> Крафт: 50 лент
 transport-belt=50 inserter=40 small-electric-pole=50 electric-mining-drill=25
 build:steam-engine=30 research:railway rocket=1
 note: optional line of text
