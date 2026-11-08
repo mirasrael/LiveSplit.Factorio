@@ -27,6 +27,7 @@ startup
     settings.Add("autostart", true, "Start the timer when a new map starts");
     settings.Add("autoreset", false, "Reset the timer when a new map starts");
     settings.Add("rewind", true, "Loading an earlier save undoes splits made after it (retry a segment)");
+    settings.Add("catchup", true, "Loading a save skips segments it has already completed (starts the timer if needed)");
     settings.Add("tags", true, "Split on tags in segment names: [research:x] [build:x=N] [rocket=N] [inventory:x=N]");
     settings.Add("debug", false, "Log state changes (view with DebugView)");
 
@@ -362,6 +363,35 @@ init
             return f == IntPtr.Zero ? 0u : memory.ReadValue<uint>(add(f, O["force.rocketsLaunched"]));
         });
 
+        // Evaluates the tag in a segment name: -1 = no tag (or not usable for catching
+        // up when monotonicOnly), 0 = condition not met yet, 1 = met.
+        // Inventory counts go down when items are used, so they say nothing about
+        // progress and are excluded when monotonicOnly is set.
+        vars.Eval = (Func<string, bool, int>)((segName, monotonicOnly) =>
+        {
+            var m = System.Text.RegularExpressions.Regex.Match(segName ?? "", @"\[(research|build|rocket|inventory|inv)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
+            if (!m.Success) return -1;
+            string kind = m.Groups[1].Value, target = m.Groups[2].Value;
+            ulong need = m.Groups[3].Success ? ulong.Parse(m.Groups[3].Value) : 1UL;
+            bool ok;
+            if (kind == "research") ok = vars.Researched(target);
+            else if (kind == "build") ok = vars.BuiltCount(target) >= need;
+            else if (kind == "rocket") ok = (ulong)vars.Rockets() >= need;
+            else if (monotonicOnly) return -1;
+            else ok = vars.InventoryCount(target) >= need;
+            return ok ? 1 : 0;
+        });
+
+        // Number of segments already completed in the loaded map: everything up to and
+        // including the last segment whose (monotonic) tag is already satisfied.
+        vars.CompletedSegments = (Func<IRun, int>)(run =>
+        {
+            int done = 0;
+            for (int i = 0; i < run.Count; i++)
+                if (vars.Eval(run[i].Name, true) == 1) done = i + 1;
+            return done;
+        });
+
         vars.Ready = true;
         log("ready");
     }
@@ -399,24 +429,51 @@ update
             vars.FreshMapReset = fresh;
             if (settings["debug"]) vars.Log("map " + map.ToString("X") + " ticks " + ticks + (fresh ? " (new game)" : ""));
 
-            // Loading an earlier save during a run (retrying a segment): game time
-            // already follows the save's ticks; also undo every split made after the
-            // moment the save was taken, so those segments can be split again.
-            if (!fresh && settings["rewind"] &&
-                (timer.CurrentPhase == TimerPhase.Running || timer.CurrentPhase == TimerPhase.Ended))
+            // A save was loaded (not a new game): bring the splits in line with it.
+            //  - rewind:  undo splits made after the save was taken (retrying a segment)
+            //  - catchup: skip forward over segments the save has already completed,
+            //             starting the timer first if it is not running
+            if (!fresh && vars.Map != IntPtr.Zero && (settings["rewind"] || settings["catchup"]))
             {
                 var model = new TimerModel { CurrentState = timer };
                 var saveTime = TimeSpan.FromSeconds((double)ticks / 60.0);
-                int undone = 0;
-                while (timer.CurrentSplitIndex != 0)
+                int done = 0;
+                try { done = vars.CompletedSegments(timer.Run); } catch (Exception) { }
+                done = Math.Min(done, timer.Run.Count - 1);   // the last segment is never skipped
+                string where = "save loaded at " + saveTime.ToString(@"h\:mm\:ss") + ": ";
+
+                if (settings["rewind"] && (timer.CurrentPhase == TimerPhase.Running || timer.CurrentPhase == TimerPhase.Ended))
                 {
-                    int last = timer.CurrentPhase == TimerPhase.Ended ? timer.Run.Count - 1 : timer.CurrentSplitIndex - 1;
-                    var st = timer.Run[last].SplitTime.GameTime;
-                    if (!st.HasValue || st.Value <= saveTime) break;
-                    model.UndoSplit();
-                    undone++;
+                    int undone = 0;
+                    while (timer.CurrentSplitIndex != 0)
+                    {
+                        int last = timer.CurrentPhase == TimerPhase.Ended ? timer.Run.Count - 1 : timer.CurrentSplitIndex - 1;
+                        var st = timer.Run[last].SplitTime.GameTime;
+                        // Timed split: undo when it happened after the save.
+                        // Skipped split (no time): undo unless the save proves it done.
+                        bool undo = st.HasValue ? st.Value > saveTime : last >= done;
+                        if (!undo) break;
+                        model.UndoSplit();
+                        undone++;
+                    }
+                    if (undone > 0) vars.Log(where + "undid " + undone + " split(s)");
                 }
-                if (undone > 0) vars.Log("save loaded at " + saveTime.ToString(@"h\:mm\:ss") + ": undid " + undone + " split(s)");
+
+                if (settings["catchup"] && done > 0)
+                {
+                    if (timer.CurrentPhase == TimerPhase.NotRunning)
+                    {
+                        model.Start();
+                        vars.Log(where + "timer started");
+                    }
+                    int skipped = 0;
+                    while (timer.CurrentPhase == TimerPhase.Running && timer.CurrentSplitIndex < done)
+                    {
+                        model.SkipSplit();
+                        skipped++;
+                    }
+                    if (skipped > 0) vars.Log(where + "skipped " + skipped + " already completed segment(s)");
+                }
             }
         }
     }
@@ -444,22 +501,8 @@ reset
 split
 {
     if (!settings["tags"] || vars.Map == IntPtr.Zero || timer.CurrentSplitIndex < 0) return false;
-    string name = timer.Run[timer.CurrentSplitIndex].Name;
-    var m = System.Text.RegularExpressions.Regex.Match(name, @"\[(research|build|rocket|inventory|inv)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
-    if (!m.Success) return false;
-
-    string kind = m.Groups[1].Value;
-    string target = m.Groups[2].Value;
-    ulong need = m.Groups[3].Success ? ulong.Parse(m.Groups[3].Value) : 1UL;
-    try
-    {
-        if (kind == "research") return vars.Researched(target);
-        if (kind == "build") return vars.BuiltCount(target) >= need;
-        if (kind == "rocket") return (ulong)vars.Rockets() >= need;
-        if (kind == "inventory" || kind == "inv") return vars.InventoryCount(target) >= need;
-    }
-    catch (Exception) { }
-    return false;
+    try { return vars.Eval(timer.Run[timer.CurrentSplitIndex].Name, false) == 1; }
+    catch (Exception) { return false; }
 }
 
 isLoading

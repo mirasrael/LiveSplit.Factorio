@@ -18,6 +18,12 @@ A [LiveSplit](https://livesplit.org/) auto splitter (`.asl`) for Factorio 2.x, i
 - **Retry a segment by loading a save**: game time follows the save's ticks, and every split
   made after the moment the save was taken is undone automatically, so the segment can be
   split again (setting *rewind*, on by default).
+- **Continue from any save**: when a save is loaded (or LiveSplit attaches to an already
+  loaded map), the script finds the last segment whose `research` / `build` / `rocket` tag is
+  already satisfied and skips every segment up to it — including untagged ones in between —
+  starting the timer if needed (setting *catchup*, on by default). Segments are *skipped*, not
+  split, so no fake times end up in your golds. Inventory tags are ignored for this, since
+  items get used up.
 
 Segments without a tag are split manually. Names are internal prototype names
 (`railway`, `rocket-silo`, `advanced-oil-processing`, `locomotive`, `oil-refinery`, `biolab`, …),
