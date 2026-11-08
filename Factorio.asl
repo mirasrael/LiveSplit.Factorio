@@ -1,0 +1,359 @@
+// LiveSplit auto splitter for Factorio 2.x (incl. Space Age).
+//
+// Reads game state from memory. All memory offsets are resolved at runtime from
+// factorio.pdb (shipped with the game next to factorio.exe), so no addresses are
+// hard-coded and the script keeps working across game updates as long as the
+// structures it relies on keep their names.
+//
+// The script only READS memory. It does not change the game and does not disable
+// achievements.
+//
+// Splits are driven by tags in segment names:
+//   [research:railway]      split when the technology is researched
+//   [build:locomotive]      split when at least 1 entity of that type was built
+//   [build:lab=40]          ... at least 40 built
+//   [rocket]  [rocket=2]    split when the player force has launched N rockets
+// Segments without a tag are split manually.
+
+state("factorio") {}
+
+startup
+{
+    refreshRate = 20;
+
+    settings.Add("gametime", true, "Use in-game time (ticks played, the same clock achievements use)");
+    settings.Add("autostart", true, "Start the timer when a new map starts");
+    settings.Add("autoreset", false, "Reset the timer when a new map starts");
+    settings.Add("tags", true, "Split on tags in segment names: [research:x] [build:x=N] [rocket=N]");
+    settings.Add("debug", false, "Log state changes (view with DebugView)");
+
+    // P/Invoke into dbghelp.dll via Reflection.Emit: ASL scripts cannot declare
+    // [DllImport] methods directly.
+    var asmName = new System.Reflection.AssemblyName("FactorioAslDbgHelp");
+    var asm = AppDomain.CurrentDomain.DefineDynamicAssembly(asmName, System.Reflection.Emit.AssemblyBuilderAccess.Run);
+    var mod = asm.DefineDynamicModule("FactorioAslDbgHelp");
+    var tb = mod.DefineType("DbgHelp", System.Reflection.TypeAttributes.Public | System.Reflection.TypeAttributes.Abstract | System.Reflection.TypeAttributes.Sealed);
+    Action<string, Type, Type[]> def = (name, ret, args) =>
+    {
+        var m = tb.DefinePInvokeMethod(name, "dbghelp.dll",
+            System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static | System.Reflection.MethodAttributes.PinvokeImpl,
+            System.Reflection.CallingConventions.Standard, ret, args,
+            System.Runtime.InteropServices.CallingConvention.Winapi,
+            System.Runtime.InteropServices.CharSet.Unicode);
+        m.SetImplementationFlags(m.GetMethodImplementationFlags() | System.Reflection.MethodImplAttributes.PreserveSig);
+    };
+    def("SymSetOptions", typeof(uint), new[] { typeof(uint) });
+    def("SymInitializeW", typeof(bool), new[] { typeof(IntPtr), typeof(string), typeof(bool) });
+    def("SymCleanup", typeof(bool), new[] { typeof(IntPtr) });
+    def("SymLoadModuleExW", typeof(ulong), new[] { typeof(IntPtr), typeof(IntPtr), typeof(string), typeof(string), typeof(ulong), typeof(uint), typeof(IntPtr), typeof(uint) });
+    def("SymFromNameW", typeof(bool), new[] { typeof(IntPtr), typeof(string), typeof(byte[]) });
+    def("SymGetTypeFromNameW", typeof(bool), new[] { typeof(IntPtr), typeof(ulong), typeof(string), typeof(byte[]) });
+    def("SymGetTypeInfo", typeof(bool), new[] { typeof(IntPtr), typeof(ulong), typeof(uint), typeof(int), typeof(byte[]) });
+    vars.DbgHelp = tb.CreateType();
+
+    vars.Log = (Action<string>)(msg => print("[Factorio] " + msg));
+}
+
+init
+{
+    vars.Ready = false;
+    vars.Map = IntPtr.Zero;
+    vars.Ticks = 0UL;
+    vars.FreshMapStart = false;
+    vars.FreshMapReset = false;
+    Action<string> log = vars.Log;
+
+    string exe = modules.First().FileName;
+    string pdb = Path.ChangeExtension(exe, ".pdb");
+    var O = new Dictionary<string, long>();
+
+    string cacheDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LiveSplit.Factorio");
+    var fi = new FileInfo(exe);
+    string cacheFile = Path.Combine(cacheDir, "offsets-v1-" + fi.Length + "-" + fi.LastWriteTimeUtc.Ticks + ".txt");
+
+    if (File.Exists(cacheFile))
+    {
+        foreach (var line in File.ReadAllLines(cacheFile))
+        {
+            var kv = line.Split('=');
+            if (kv.Length == 2) O[kv[0]] = long.Parse(kv[1]);
+        }
+        log("offsets loaded from cache " + cacheFile);
+    }
+    else if (!File.Exists(pdb))
+    {
+        log("factorio.pdb not found next to " + exe + " - cannot resolve offsets");
+    }
+    else
+    {
+        log("resolving offsets from " + pdb + " (one-time, takes a few seconds)");
+        Type D = vars.DbgHelp;
+        Func<string, object[], object> call = (n, a) => D.GetMethod(n).Invoke(null, a);
+        IntPtr h = new IntPtr(0x46414354);
+        call("SymSetOptions", new object[] { (uint)0x6 });
+        call("SymInitializeW", new object[] { h, null, false });
+        try
+        {
+            ulong modBase = (ulong)call("SymLoadModuleExW", new object[] { h, IntPtr.Zero, exe, null, 0x140000000UL, 0u, IntPtr.Zero, 0u });
+            if (modBase == 0) throw new Exception("SymLoadModuleExW failed");
+
+            Func<byte[]> symBuf = () =>
+            {
+                var b = new byte[88 + 2 * 2048];
+                BitConverter.GetBytes(88u).CopyTo(b, 0);     // SizeOfStruct
+                BitConverter.GetBytes(2048u).CopyTo(b, 80);  // MaxNameLen
+                return b;
+            };
+            Func<string, long> symRva = n =>
+            {
+                var b = symBuf();
+                if (!(bool)call("SymFromNameW", new object[] { h, n, b })) throw new Exception("symbol not found: " + n);
+                return (long)(BitConverter.ToUInt64(b, 56) - modBase);
+            };
+            Func<string, uint> typeId = n =>
+            {
+                var b = symBuf();
+                if (!(bool)call("SymGetTypeFromNameW", new object[] { h, modBase, n, b })) throw new Exception("type not found: " + n);
+                return BitConverter.ToUInt32(b, 4);
+            };
+            Func<uint, int, byte[], bool> info = (id, kind, b) => (bool)call("SymGetTypeInfo", new object[] { h, modBase, id, kind, b });
+            Func<uint, int, ulong> infoNum = (id, kind) =>
+            {
+                var b = new byte[8];
+                return info(id, kind, b) ? BitConverter.ToUInt64(b, 0) : ulong.MaxValue;
+            };
+            Func<uint, string> infoName = id =>
+            {
+                var b = new byte[8];
+                if (!info(id, 1, b)) return null;
+                return System.Runtime.InteropServices.Marshal.PtrToStringUni(new IntPtr(BitConverter.ToInt64(b, 0)));
+            };
+            Func<string, long> sizeOf = udt => (long)infoNum(typeId(udt), 2);
+            Func<string, string, long> member = (udt, name) =>
+            {
+                uint t = typeId(udt);
+                uint count = (uint)infoNum(t, 13);
+                var b = new byte[8 + 4 * count];
+                BitConverter.GetBytes(count).CopyTo(b, 0);
+                if (!info(t, 7, b)) throw new Exception("no children: " + udt);
+                for (int i = 0; i < count; i++)
+                {
+                    uint c = BitConverter.ToUInt32(b, 8 + 4 * i);
+                    if ((uint)infoNum(c, 0) == 7 && infoName(c) == name) return (long)(uint)infoNum(c, 10);
+                }
+                throw new Exception("member not found: " + udt + "." + name);
+            };
+
+            const string FLOW = "FlowStatistics<IDWithQuality<ID<EntityPrototype,unsigned short> >,unsigned __int64,void>";
+            O["global"] = symRva("global");
+            O["entityPrototypes"] = symRva("PrototypeList<EntityPrototype>::indexToPrototype");
+            O["gc.scenario"] = member("GlobalContext", "scenario");
+            O["scenario.map"] = member("Scenario", "map");
+            O["map.ticksPlayed"] = member("Map", "ticksPlayed");
+            O["map.forceManager"] = member("Map", "forceManager");
+            O["fm.forceDataList"] = member("ForceManager", "forceDataList");
+            O["force.name"] = member("ForceData", "name");
+            O["force.technologies"] = member("ForceData", "technologies");
+            O["force.rocketsLaunched"] = member("ForceData", "rocketsLaunched");
+            O["force.statistics"] = member("ForceData", "statistics");
+            O["stats.size"] = sizeOf("ForceStatistics");
+            O["stats.build"] = member("ForceStatistics", "buildCountStatistics");
+            O["flow.input"] = member(FLOW, "inputRunningCounts");
+            O["techs.list"] = member("Technologies", "indexToInstance");
+            O["tech.size"] = sizeOf("Technology");
+            O["tech.prototype"] = member("Technology", "prototype");
+            O["tech.researchCount"] = member("Technology", "researchCount");
+            O["proto.name"] = member("PrototypeBase", "name");
+
+            Directory.CreateDirectory(cacheDir);
+            File.WriteAllLines(cacheFile, O.Select(kv => kv.Key + "=" + kv.Value).ToArray());
+            log("offsets resolved and cached");
+        }
+        catch (Exception e)
+        {
+            log("offset resolution failed: " + e.Message);
+            O.Clear();
+        }
+        finally
+        {
+            call("SymCleanup", new object[] { h });
+        }
+    }
+
+    if (O.Count > 0)
+    {
+        vars.O = O;
+        long baseAddr = modules.First().BaseAddress.ToInt64();
+        vars.Base = baseAddr;
+
+        Func<IntPtr, long, IntPtr> add = (p, o) => new IntPtr(p.ToInt64() + o);
+        Func<IntPtr, long, IntPtr> ptr = (p, o) => p == IntPtr.Zero ? IntPtr.Zero : memory.ReadPointer(add(p, o));
+        Func<IntPtr, string> str = p =>
+        {
+            ulong size = memory.ReadValue<ulong>(add(p, 0x10));
+            ulong cap = memory.ReadValue<ulong>(add(p, 0x18));
+            IntPtr data = cap >= 16 ? memory.ReadPointer(p) : p;
+            if (size == 0 || size > 512 || data == IntPtr.Zero) return "";
+            return Encoding.UTF8.GetString(memory.ReadBytes(data, (int)size));
+        };
+        // std::vector<T> -> element addresses
+        Func<IntPtr, long, List<IntPtr>> vec = (p, stride) =>
+        {
+            var res = new List<IntPtr>();
+            IntPtr b = memory.ReadPointer(p), e = memory.ReadPointer(add(p, 8));
+            if (b == IntPtr.Zero || e.ToInt64() < b.ToInt64()) return res;
+            long n = (e.ToInt64() - b.ToInt64()) / stride;
+            if (n > 100000) return res;
+            for (long i = 0; i < n; i++) res.Add(add(b, i * stride));
+            return res;
+        };
+        vars.Add = add; vars.Ptr = ptr; vars.Str = str; vars.Vec = vec;
+
+        // Called whenever a different map is loaded: find the player force and index
+        // technologies and entity prototypes by name.
+        vars.IndexMap = (Action<IntPtr>)(map =>
+        {
+            vars.Force = IntPtr.Zero;
+            var techs = new Dictionary<string, IntPtr>();
+            foreach (var fp in vec(add(map, O["map.forceManager"] + O["fm.forceDataList"]), 8))
+            {
+                IntPtr f = memory.ReadPointer(fp);
+                if (f == IntPtr.Zero || str(add(f, O["force.name"])) != "player") continue;
+                vars.Force = f;
+                IntPtr tl = ptr(f, O["force.technologies"]);
+                if (tl != IntPtr.Zero)
+                    foreach (var t in vec(add(tl, O["techs.list"]), O["tech.size"]))
+                    {
+                        IntPtr pr = memory.ReadPointer(add(t, O["tech.prototype"]));
+                        if (pr != IntPtr.Zero) techs[str(add(pr, O["proto.name"]))] = t;
+                    }
+            }
+            vars.Techs = techs;
+            var ents = new Dictionary<string, int>();
+            int idx = 0;
+            foreach (var pp in vec(new IntPtr(baseAddr + O["entityPrototypes"]), 8))
+            {
+                IntPtr pr = memory.ReadPointer(pp);
+                if (pr != IntPtr.Zero) { string n = str(add(pr, O["proto.name"])); if (n != "" && !ents.ContainsKey(n)) ents[n] = idx; }
+                idx++;
+            }
+            vars.Entities = ents;
+            log("map indexed: " + techs.Count + " technologies, " + ents.Count + " entity prototypes");
+        });
+
+        vars.Researched = (Func<string, bool>)(name =>
+        {
+            Dictionary<string, IntPtr> techs = vars.Techs;
+            IntPtr t;
+            return techs.TryGetValue(name, out t) && memory.ReadValue<uint>(add(t, O["tech.researchCount"])) > 0;
+        });
+
+        vars.BuiltCount = (Func<string, ulong>)(name =>
+        {
+            Dictionary<string, int> ents = vars.Entities;
+            IntPtr f = vars.Force;
+            int id;
+            if (f == IntPtr.Zero || !ents.TryGetValue(name, out id)) return 0UL;
+            ulong total = 0;
+            foreach (var s in vec(add(f, O["force.statistics"]), O["stats.size"]))
+            {
+                IntPtr flow = memory.ReadPointer(add(s, O["stats.build"]));
+                if (flow == IntPtr.Zero) continue;
+                foreach (var e in vec(add(flow, O["flow.input"]), 16))
+                    if (memory.ReadValue<ushort>(e) == id) total += memory.ReadValue<ulong>(add(e, 8));
+            }
+            return total;
+        });
+
+        vars.Rockets = (Func<uint>)(() =>
+        {
+            IntPtr f = vars.Force;
+            return f == IntPtr.Zero ? 0u : memory.ReadValue<uint>(add(f, O["force.rocketsLaunched"]));
+        });
+
+        vars.Ready = true;
+        log("ready");
+    }
+}
+
+update
+{
+    if (!vars.Ready) return false;
+    Dictionary<string, long> O = vars.O;
+    Func<IntPtr, long, IntPtr> ptr = vars.Ptr;
+    long b = vars.Base;
+
+    IntPtr gc = memory.ReadPointer(new IntPtr(b + O["global"]));
+    IntPtr sc = ptr(gc, O["gc.scenario"]);
+    IntPtr map = ptr(sc, O["scenario.map"]);
+    ulong ticks = map == IntPtr.Zero ? 0UL : memory.ReadValue<ulong>(new IntPtr(map.ToInt64() + O["map.ticksPlayed"]));
+
+    IntPtr prevMap = vars.Map;
+    if (map != prevMap)
+    {
+        vars.Map = map;
+        if (map != IntPtr.Zero)
+        {
+            try { vars.IndexMap(map); }
+            catch (Exception e) { vars.Log("indexing failed: " + e.Message); vars.Map = IntPtr.Zero; }
+            bool fresh = ticks < 600;   // less than 10 s played: a new game, not a loaded save
+            vars.FreshMapStart = fresh;
+            vars.FreshMapReset = fresh;
+            if (settings["debug"]) vars.Log("map " + map.ToString("X") + " ticks " + ticks + (fresh ? " (new game)" : ""));
+        }
+    }
+    vars.Ticks = ticks;
+}
+
+start
+{
+    if (settings["autostart"] && vars.FreshMapStart && vars.Ticks > 0UL)
+    {
+        vars.FreshMapStart = false;
+        return true;
+    }
+}
+
+reset
+{
+    if (settings["autoreset"] && vars.FreshMapReset)
+    {
+        vars.FreshMapReset = false;
+        return true;
+    }
+}
+
+split
+{
+    if (!settings["tags"] || vars.Map == IntPtr.Zero || timer.CurrentSplitIndex < 0) return false;
+    string name = timer.Run[timer.CurrentSplitIndex].Name;
+    var m = System.Text.RegularExpressions.Regex.Match(name, @"\[(research|build|rocket)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
+    if (!m.Success) return false;
+
+    string kind = m.Groups[1].Value;
+    string target = m.Groups[2].Value;
+    ulong need = m.Groups[3].Success ? ulong.Parse(m.Groups[3].Value) : 1UL;
+    try
+    {
+        if (kind == "research") return vars.Researched(target);
+        if (kind == "build") return vars.BuiltCount(target) >= need;
+        if (kind == "rocket") return (ulong)vars.Rockets() >= need;
+    }
+    catch (Exception) { }
+    return false;
+}
+
+isLoading
+{
+    return settings["gametime"];
+}
+
+gameTime
+{
+    if (settings["gametime"]) return TimeSpan.FromSeconds((double)vars.Ticks / 60.0);
+}
+
+exit
+{
+    vars.Ready = false;
+}
