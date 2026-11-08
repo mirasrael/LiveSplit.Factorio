@@ -89,7 +89,16 @@ namespace LiveSplit.Factorio
                 else if (cur != null && line.StartsWith("note:", StringComparison.OrdinalIgnoreCase))
                     f.Notes[key] = line.Substring(5).Trim();
                 else if (cur != null)
-                    cur.AddRange(ParseEntries(line));
+                {
+                    // "split:" is the auto splitter's condition; show it too (once).
+                    bool split = line.StartsWith("split:", StringComparison.OrdinalIgnoreCase);
+                    foreach (var e in ParseEntries(split ? line.Substring(6) : line))
+                    {
+                        bool dup = false;
+                        foreach (var o in cur) if (o.Kind == e.Kind && o.Name == e.Name) { dup = true; o.Need = Math.Max(o.Need, e.Need); }
+                        if (!dup) cur.Add(e);
+                    }
+                }
             }
             return f;
         }

@@ -25,6 +25,16 @@ A [LiveSplit](https://livesplit.org/) auto splitter (`.asl`) for Factorio 2.x, i
   split, so no fake times end up in your golds. Inventory tags are ignored for this, since
   items get used up.
 
+Tags can also be kept out of the segment names: put them in `<splits>.steps.txt` next to the
+`.lss` as a `split:` line under the segment (see the step panel below):
+
+```
+> Рельсы ×2 крафта
+split: build:locomotive
+```
+
+A tag in the segment name wins over the steps file. The file is re-read when saved.
+
 Segments without a tag are split manually. Names are internal prototype names
 (`railway`, `rocket-silo`, `advanced-oil-processing`, `locomotive`, `oil-refinery`, `biolab`, …),
 as shown in the game's tooltips with *Show internal names* or on the wiki. When a map is
@@ -80,9 +90,10 @@ Done entries turn green.
 transport-belt=50 inserter=40 small-electric-pole=50 electric-mining-drill=25
 build:steam-engine=30 research:railway rocket=1
 note: optional line of text
+split: build:locomotive
 ```
 
-  Without an entry, the panel shows the tags of the segment name. The file is re-read when saved.
+  The `split:` line is shown too. Without an entry, the panel shows the tags of the segment name. The file is re-read when saved.
 - Icons are read from the game's `data` folder (found from the running game, or set it in
   the component settings).
 

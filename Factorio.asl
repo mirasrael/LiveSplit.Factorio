@@ -56,6 +56,71 @@ startup
     vars.DbgHelp = tb.CreateType();
 
     vars.Log = (Action<string>)(msg => print("[Factorio] " + msg));
+
+    // Split conditions can also live in "<splits>.steps.txt" next to the .lss, so segment
+    // names stay short:   > beginning of the segment name
+    //                     split: build:locomotive
+    // A tag in the segment name itself wins over the steps file.
+    vars.StepKeys = new List<KeyValuePair<string, string>>();   // normalized name prefix -> "[tag]"
+    vars.StepsPath = "";
+    vars.StepsTime = DateTime.MinValue;
+    vars.StepsCheck = DateTime.MinValue;
+
+    Func<string, string> normalize = s =>
+    {
+        s = (s ?? "").Trim();
+        if (s.StartsWith("-")) s = s.Substring(1);
+        // braces as char codes: the ASL parser counts braces even inside literals
+        char ob = (char)123, cb = (char)125;
+        if (s.Length > 0 && s[0] == ob && s.IndexOf(cb) > 0) s = s.Substring(s.IndexOf(cb) + 1);
+        s = System.Text.RegularExpressions.Regex.Replace(s, @"\[[^\]]*\]", "");
+        return System.Text.RegularExpressions.Regex.Replace(s, @"\s+", " ").Trim();
+    };
+
+    // Re-reads the steps file when the splits file or the steps file changed.
+    vars.RefreshSteps = (Action<string>)(lssPath =>
+    {
+        string p = string.IsNullOrEmpty(lssPath) ? "" : Path.ChangeExtension(lssPath, ".steps.txt");
+        DateTime t = DateTime.MinValue;
+        try { if (p != "" && File.Exists(p)) t = File.GetLastWriteTimeUtc(p); } catch (Exception) { }
+        if (p != (string)vars.StepsPath || t != (DateTime)vars.StepsTime)
+        {
+        vars.StepsPath = p;
+        vars.StepsTime = t;
+        var keys = new List<KeyValuePair<string, string>>();
+        if (t != DateTime.MinValue)
+        {
+            try
+            {
+                string key = null;
+                foreach (var raw in File.ReadAllLines(p))
+                {
+                    var line = raw.Trim();
+                    if (line.StartsWith(">")) key = normalize(line.Substring(1));
+                    else if (key != null && line.StartsWith("split:", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var tag = line.Substring(6).Trim();
+                        if (tag != "") keys.Add(new KeyValuePair<string, string>(key, "[" + tag + "]"));
+                    }
+                }
+                vars.Log("steps file: " + keys.Count + " split condition(s) from " + p);
+            }
+            catch (Exception e) { vars.Log("steps file unreadable: " + e.Message); }
+        }
+        vars.StepKeys = keys;
+        }
+    });
+
+    // The split condition of a segment: its own tag, else the steps file's split line.
+    vars.TagOf = (Func<string, string>)(segName =>
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(segName ?? "", @"\[(research|build|rocket|inventory|inv)\b")) return segName;
+        string n = normalize(segName), best = null, tag = "";
+        foreach (var kv in (List<KeyValuePair<string, string>>)vars.StepKeys)
+            if (kv.Key.Length > 0 && n.StartsWith(kv.Key, StringComparison.OrdinalIgnoreCase) && (best == null || kv.Key.Length > best.Length))
+            { best = kv.Key; tag = kv.Value; }
+        return tag;
+    });
 }
 
 init
@@ -369,7 +434,7 @@ init
         // progress and are excluded when monotonicOnly is set.
         vars.Eval = (Func<string, bool, int>)((segName, monotonicOnly) =>
         {
-            var m = System.Text.RegularExpressions.Regex.Match(segName ?? "", @"\[(research|build|rocket|inventory|inv)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
+            var m = System.Text.RegularExpressions.Regex.Match((string)vars.TagOf(segName), @"\[(research|build|rocket|inventory|inv)(?::([A-Za-z0-9_\-]+))?(?:=(\d+))?\]");
             if (!m.Success) return -1;
             string kind = m.Groups[1].Value, target = m.Groups[2].Value;
             ulong need = m.Groups[3].Success ? ulong.Parse(m.Groups[3].Value) : 1UL;
@@ -412,6 +477,11 @@ init
 update
 {
     if (!vars.Ready) return false;
+    if (DateTime.UtcNow >= vars.StepsCheck)
+    {
+        vars.StepsCheck = DateTime.UtcNow.AddSeconds(2);
+        try { vars.RefreshSteps(timer.Run.FilePath); } catch (Exception) { }
+    }
     Dictionary<string, long> O = vars.O;
     Func<IntPtr, long, IntPtr> ptr = vars.Ptr;
     long b = vars.Base;
@@ -438,7 +508,7 @@ update
                 Dictionary<string, IntPtr> techs = vars.Techs;
                 Dictionary<string, int> ents = vars.Entities, items = vars.Items;
                 foreach (var seg in timer.Run)
-                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(seg.Name ?? "", @"\[(research|build|inventory|inv):([A-Za-z0-9_\-]+)(?:=\d+)?\]"))
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches((string)vars.TagOf(seg.Name), @"\[(research|build|inventory|inv):([A-Za-z0-9_\-]+)(?:=\d+)?\]"))
                     {
                         string k = m.Groups[1].Value, n = m.Groups[2].Value;
                         bool known = k == "research" ? techs.ContainsKey(n) : k == "build" ? ents.ContainsKey(n) : items.ContainsKey(n);

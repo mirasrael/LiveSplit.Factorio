@@ -6,127 +6,164 @@
 #   research:tech    technology researched
 #   rocket=N         rockets launched
 #   note: text       a line of text under the icons
+#   split: <tag>     the auto splitter (Factorio.asl) splits the segment when this is met,
+#                    e.g. "split: build:locomotive"; also used to skip ahead when a save is loaded
 # Names are Factorio internal names. The file is re-read automatically when it is saved.
 
 > Камни → бурнеры
+split: build:burner-mining-drill=4
 build:burner-mining-drill=4
 
 > Пар + лаба
+split: research:electric-mining-drill
 build:boiler=1 build:steam-engine=1 build:lab=1
 research:automation research:electric-mining-drill
 
 > Крафт: 50 лент
+split: inv:electric-mining-drill=25
 transport-belt=50 inserter=40 small-electric-pole=50 electric-mining-drill=25
 
 > 10 буров на уголь
+split: build:electric-mining-drill=25
 build:electric-mining-drill=25
 
 > Сборщики шестерён
+split: build:assembling-machine-1=2
 build:assembling-machine-1=2
 
 > Крафт: 25 кр.инс.
+split: inv:assembling-machine-1=35
 long-handed-inserter=25 fast-inserter=15 iron-chest=15 assembling-machine-1=35
 
 > Power 1
+split: build:steam-engine=30
 build:boiler=15 build:steam-engine=30 build:burner-inserter=13
 
 > Крафт: 80 кр.
+split: inv:lab=40
 long-handed-inserter=80 fast-inserter=50 iron-chest=30 assembling-machine-1=20
 underground-belt=15 splitter=15 lab=40
 
 > 3 ленты к базе
+split: build:lab=40
 build:lab=40
 
 > Stage 0.2
 research:steel-processing
 
 > Power 2
+split: build:steam-engine=94
 build:boiler=47 build:steam-engine=94 build:burner-inserter=45
 note: totals for Power 1 + Power 2
 
 > Крафт: 40 кр.
+split: inv:assembling-machine-2=40
 long-handed-inserter=40 fast-inserter=20 iron-chest=20 assembling-machine-2=40
 assembling-machine-1=20 splitter=15 underground-belt=15
 
 > Stage 0.3
+split: research:logistics-2
 research:logistics-2
 
 > Railway исследована
+split: research:railway
 research:logistics-2 research:railway
 
 > 20 двигателей
+split: inv:engine-unit=20
 engine-unit=20
 
 > Рельсы ×2 крафта
+split: build:locomotive
 rail=4 build:locomotive
 
 > Крафт: 15 качалок
+split: build:pumpjack=15
 pumpjack=15 storage-tank=9 pipe-to-ground=100 car=1
 build:pumpjack=15
 
 > Нефть ≥1600%
+split: build:oil-refinery=14
 oil-refinery=14 chemical-plant=20
 build:oil-refinery=14
 
 > Пластик, сера
+split: build:chemical-plant=20
 build:chemical-plant=20
 
 > Stage 2 сразу после Advanced Oil
+split: research:advanced-oil-processing
 research:advanced-oil-processing
 
 > Роборпорт
+split: build:roboport
 build:roboport passive-provider-chest=2 storage-chest=15
 
 > Уран
+split: research:uranium-processing
 research:uranium-processing
 
 > Ракетная шахта исследована
+split: research:rocket-silo
 research:rocket-silo
 
 > Первая ракета
+split: rocket
 space-platform-starter-pack=1 rocket=1
 
 > 2× Purple Plants
+split: build:agricultural-tower
 build:agricultural-tower
 
 > 6 биокамер
+split: build:biochamber=13
 build:biochamber=13 build:heating-tower=1
 
 > Крафт: машина, 250
 car=1 construction-robot=250 lightning-rod=10 storage-chest=5
 
 > Хранилище → рециклеры
+split: build:lightning-rod=10
 build:lightning-rod=10
 
 > 100+ scrap
+split: build:recycler=100
 build:recycler=100
 
 > 8 EM-заводов
+split: build:electromagnetic-plant=8
 build:electromagnetic-plant=8
 
 > Power Armor MK2
 research:power-armor-mk2 construction-robot=20 logistic-robot=30
 
 > Power у кислоты
+split: inv:tungsten-ore=1000
 tungsten-ore=1000
 
 > Main Base 1, 7 литейных
+split: build:big-mining-drill=16
 build:foundry=7 build:big-mining-drill=16
 
 > Силос, 500 кальцита
 calcite=500
 
 > Stage 18 биолабы
+split: research:planet-discovery-aquilo
 research:planet-discovery-aquilo
 
 > Edge Ship
+split: research:physical-projectile-damage-7
 research:physical-projectile-damage-7 research:weapon-shooting-speed-6 research:stronger-explosives-7
 
 > Аквило: бетон
+split: build:cryogenic-plant=13
 build:cryogenic-plant=13
 
 > Запуск 1000 + 400 науки
+split: research:quantum-processor
 research:quantum-processor
 
 > 200 квантовых
+split: build:railgun-turret=2
 quantum-processor=200 railgun-ammo=10 build:railgun-turret=2
