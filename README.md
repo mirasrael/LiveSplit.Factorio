@@ -97,6 +97,15 @@ split: build:locomotive
 - Icons are read from the game's `data` folder (found from the running game, or set it in
   the component settings).
 
+## Is this allowed?
+
+The script only reads memory of a game running on your own computer: no injection, no
+writes, no mods, and no game files or PDB data are redistributed here. Asked on the
+official forum, a Factorio developer replied that, while not a legally binding answer,
+Wube doesn't mind what people do with the game on their computers as long as it isn't
+illegal or gets them in legal trouble — see
+[the forum thread](https://forums.factorio.com/viewtopic.php?t=136884).
+
 ## Limitations
 
 - Windows, 64-bit Factorio with `factorio.pdb` present (Steam and standalone builds ship it).
